@@ -1,0 +1,183 @@
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:get/get.dart';
+import 'package:noorequran/controllers/notification_controller.dart';
+
+class AppReminderService {
+  static const String _goalTimeKey = 'goal_reminder_time';
+  static const String _morningTimeKey = 'morning_reminder_time';
+  static const String _eveningTimeKey = 'evening_reminder_time';
+  static const String _adhkarTimeKey = 'adhkar_reminder_time';
+  static const String _memorizationTimeKey = 'memorization_reminder_time';
+  static const String _quranTimeKey = 'quran_reminder_time';
+  static const String _nightTimeKey = 'night_reminder_time';
+  static const String _goalDhikrTimeKey = 'goal_dhikr_reminder_time';
+
+  // Helper to save TimeOfDay to SharedPreferences
+  static Future<void> _saveTime(String key, TimeOfDay time) async {
+    final prefs = await SharedPreferences.getInstance();
+    final timeString = '${time.hour}:${time.minute}';
+    await prefs.setString(key, timeString);
+    debugPrint('✅ Reminder time saved for $key: $timeString');
+  }
+
+  // Helper to get TimeOfDay from SharedPreferences
+  static Future<TimeOfDay?> _getTime(String key) async {
+    final prefs = await SharedPreferences.getInstance();
+    final timeString = prefs.getString(key);
+    if (timeString == null) return null;
+    final parts = timeString.split(':');
+    if (parts.length != 2) return null;
+    return TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1]));
+  }
+
+  // Formatting helper for NotificationController
+  static String formatTime(TimeOfDay time) {
+    final hour = time.hour;
+    final minute = time.minute;
+    final period = hour >= 12 ? 'PM' : 'AM';
+    final displayHour = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
+    return '${displayHour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')} $period';
+  }
+
+  // Public Methods for each reminder type
+  static Future<void> updateGoalTime(TimeOfDay time) async {
+    await _saveTime(_goalTimeKey, time);
+    await scheduleAll();
+  }
+
+  static Future<void> updateMorningTime(TimeOfDay time) async {
+    await _saveTime(_morningTimeKey, time);
+    await scheduleAll();
+  }
+
+  static Future<void> updateEveningTime(TimeOfDay time) async {
+    await _saveTime(_eveningTimeKey, time);
+    await scheduleAll();
+  }
+
+  static Future<void> updateAdhkarTime(TimeOfDay time) async {
+    await _saveTime(_adhkarTimeKey, time);
+    await scheduleAll();
+  }
+
+  static Future<void> updateGoalDhikrTime(TimeOfDay time) async {
+    await _saveTime(_goalDhikrTimeKey, time);
+    await scheduleAll();
+  }
+
+  static Future<void> updateNightTime(TimeOfDay time) async {
+    await _saveTime(_nightTimeKey, time);
+    await scheduleAll();
+  }
+
+  static Future<void> updateMemorizationTime(TimeOfDay time) async {
+    await _saveTime(_memorizationTimeKey, time);
+    await scheduleAll();
+  }
+
+  static Future<void> updateQuranTime(TimeOfDay time) async {
+    await _saveTime(_quranTimeKey, time);
+    await scheduleAll();
+  }
+
+  // Getters
+  static Future<TimeOfDay?> getGoalTime() => _getTime(_goalTimeKey);
+  static Future<TimeOfDay?> getMorningTime() => _getTime(_morningTimeKey);
+  static Future<TimeOfDay?> getEveningTime() => _getTime(_eveningTimeKey);
+  static Future<TimeOfDay?> getAdhkarTime() => _getTime(_adhkarTimeKey);
+  static Future<TimeOfDay?> getGoalDhikrTime() => _getTime(_goalDhikrTimeKey);
+  static Future<TimeOfDay?> getNightTime() => _getTime(_nightTimeKey);
+  static Future<TimeOfDay?> getMemorizationTime() =>
+      _getTime(_memorizationTimeKey);
+  static Future<TimeOfDay?> getQuranTime() => _getTime(_quranTimeKey);
+
+  // Core Scheduling Logic
+  static Future<void> scheduleAll() async {
+    try {
+      final notificationController = Get.find<NotificationController>();
+
+      // Goal Reminder - DISABLED as per user request
+      // final goalTime = await getGoalTime();
+      // if (goalTime != null) {
+      //   await notificationController.scheduleGoalReminder(formatTime(goalTime));
+      // }
+
+      // Morning Reminder
+      final morningTime = await getMorningTime();
+      if (morningTime != null) {
+        await notificationController.scheduleMorningReminder(
+          formatTime(morningTime),
+        );
+      }
+
+      // Evening Reminder
+      final eveningTime = await getEveningTime();
+      if (eveningTime != null) {
+        await notificationController.scheduleEveningReminder(
+          formatTime(eveningTime),
+        );
+      }
+
+      // Adhkar Reminder (Goal Setting)
+      final adhkarTime = await getAdhkarTime();
+      if (adhkarTime != null) {
+        await notificationController.scheduleAdhkarReminder(
+          formatTime(adhkarTime),
+        );
+      }
+
+      // Night Reminder (Notification Setting)
+      final nightTime = await getNightTime();
+      if (nightTime != null) {
+        await notificationController.scheduleNightReminder(
+          formatTime(nightTime),
+        );
+      }
+
+      // Goal Dhikr Reminder (Daily Goal Settings)
+      final goalDhikrTime = await getGoalDhikrTime();
+      if (goalDhikrTime != null) {
+        await notificationController.scheduleGoalDhikrReminder(
+          formatTime(goalDhikrTime),
+        );
+      }
+
+      // Memorization Reminder
+      final memTime = await getMemorizationTime();
+      if (memTime != null) {
+        await notificationController.scheduleMemorizationReminder(
+          formatTime(memTime),
+        );
+      }
+
+      // Quran Reminder
+      final quranTime = await getQuranTime();
+      if (quranTime != null) {
+        await notificationController.scheduleQuranReminder(
+          formatTime(quranTime),
+        );
+      }
+
+      debugPrint('✅ All App Reminders from SharedPreferences scheduled');
+    } catch (e) {
+      debugPrint('❌ Error in AppReminderService.scheduleAll: $e');
+    }
+  }
+
+  // Legacy compatibility (re-routing original GoalReminderService calls)
+  static Future<void> saveReminderTime(TimeOfDay time) =>
+      _saveTime(_goalTimeKey, time);
+  static Future<TimeOfDay?> getReminderTime() => getGoalTime();
+  static Future<void> scheduleGoalNotification() => scheduleAll();
+  static Future<void> updateReminderTime(TimeOfDay time) =>
+      updateGoalTime(time);
+  static Future<void> cancelGoalNotification() async {
+    // Legacy method, forwarding to NotificationController which now handles it via AwesomeNotifications
+    // The ID 1003 is still managed there.
+    final notificationController = Get.find<NotificationController>();
+    await notificationController.scheduleGoalReminder(
+      '00:00 AM',
+    ); // This effectively cancels it in current implementation
+  }
+}
