@@ -1,0 +1,243 @@
+import 'dart:developer';
+import 'package:app_links/app_links.dart';
+import 'package:awesome_notifications/awesome_notifications.dart';
+import 'package:country_code_picker/country_code_picker.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:get/get.dart';
+import 'package:get_storage/get_storage.dart';
+import 'package:noorequran/app/data/quran_data.dart';
+import 'package:noorequran/app/modules/dua_home_screen/dua_controller.dart';
+import 'package:noorequran/app/modules/dua_home_screen/user_controller_dua.dart';
+import 'package:noorequran/app/modules/home/widgets/statisticsi_vew_widget.dart';
+import 'package:noorequran/app/modules/loader/controllers/loader_controller.dart';
+import 'package:noorequran/app/modules/loader/views/loader_view.dart';
+import 'package:noorequran/app/modules/memorization/controllers/memorization_controller.dart';
+import 'package:noorequran/app/modules/chapters%20verses/controllers/translation_audio_controller.dart';
+import 'package:noorequran/app/modules/preference/controllers/set_preferences_controller.dart';
+import 'package:noorequran/constants/style.dart';
+import 'package:noorequran/controllers/notification_controller.dart';
+import 'package:noorequran/controllers/theme_controller.dart';
+import 'package:noorequran/controllers/badge_controller.dart';
+import 'package:noorequran/controllers/daily_goal_controller.dart';
+import 'package:noorequran/app/modules/home/controllers/home_controller.dart';
+import 'package:noorequran/app/modules/home/controllers/dhikr_controller.dart';
+import 'package:noorequran/app/modules/adkhar/controllers/adhkar_controller.dart';
+import 'package:noorequran/controllers/streak_controller.dart';
+import 'package:noorequran/controllers/location_controller.dart';
+import 'package:noorequran/controllers/stories_section_controller.dart';
+import 'package:noorequran/app/modules/daily_goal_settings/controllers/daily_goal_settings_controller.dart';
+import 'package:noorequran/services/deep_link_service.dart';
+import 'package:noorequran/controllers/connectivity_controller.dart';
+import 'package:noorequran/widgets/no_internet_overlay.dart';
+import 'package:noorequran/firebase_options.dart';
+import 'package:noorequran/app_routes/routes.dart';
+import 'package:quran_flutter/quran.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await GetStorage.init();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // Initialize Notifications FIRST before any controllers
+  try {
+    await AwesomeNotifications().initialize(
+      'resource://drawable/launcher_icon',
+      [
+        NotificationChannel(
+          channelKey: 'prayer_azan_channel_v4',
+          channelName: 'Prayer Alarms (Azan)',
+          channelDescription: 'Notifications for prayer times with Azan sound',
+          defaultColor: const Color(0xFF9D50DD),
+          ledColor: Colors.white,
+          importance: NotificationImportance.Max,
+          playSound: true,
+          soundSource: 'resource://raw/azan',
+          enableVibration: true,
+          criticalAlerts: true,
+          locked: false, // Initialized as false
+          onlyAlertOnce: false,
+          defaultPrivacy: NotificationPrivacy.Public,
+        ),
+        NotificationChannel(
+          channelKey: 'daily_reminders_channel',
+          channelName: 'Daily Reminders',
+          channelDescription: 'Notifications for daily spiritual tasks',
+          defaultColor: const Color(0xFF4CAF50),
+          ledColor: Colors.white,
+          importance: NotificationImportance.High,
+          playSound: true,
+          enableVibration: true,
+        ),
+        NotificationChannel(
+          channelKey: 'goal_completion_channel',
+          channelName: 'Goal Completion',
+          channelDescription: 'Congratulations on completing a goal!',
+          defaultColor: const Color(0xFFFFD700),
+          ledColor: Colors.white,
+          importance: NotificationImportance.Max,
+          playSound: true,
+          enableVibration: true,
+        ),
+      ],
+      debug: true,
+    );
+
+    AwesomeNotifications().isNotificationAllowed().then((isAllowed) async {
+      if (!isAllowed) {
+        await AwesomeNotifications().requestPermissionToSendNotifications(
+          permissions: [
+            NotificationPermission.Alert,
+            NotificationPermission.Sound,
+            NotificationPermission.Badge,
+            NotificationPermission.Vibration,
+            NotificationPermission.Light,
+            NotificationPermission.CriticalAlert,
+            NotificationPermission.PreciseAlarms,
+            NotificationPermission.FullScreenIntent,
+          ],
+        );
+      } else {
+        List<NotificationPermission> requiredPermissions = [
+          NotificationPermission.PreciseAlarms,
+          NotificationPermission.CriticalAlert,
+        ];
+
+        List<NotificationPermission> permissionsToRequest =
+            await AwesomeNotifications().checkPermissionList(
+              permissions: requiredPermissions,
+            );
+
+        if (permissionsToRequest.isNotEmpty) {
+          log(
+            'Main: Requesting specific missing permissions: $permissionsToRequest',
+          );
+          await AwesomeNotifications().requestPermissionToSendNotifications(
+            permissions: permissionsToRequest,
+          );
+        }
+      }
+    });
+
+    // Register static notification listeners.
+    AwesomeNotifications().setListeners(
+      onActionReceivedMethod: NotificationController.onActionReceivedMethod,
+      onNotificationCreatedMethod:
+          NotificationController.onNotificationCreatedMethod,
+      onNotificationDisplayedMethod:
+          NotificationController.onNotificationDisplayedMethod,
+      onDismissActionReceivedMethod:
+          NotificationController.onDismissActionReceivedMethod,
+    );
+  } catch (e) {
+    log('--------Here is exception in notification initialization: $e');
+  }
+
+  SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitDown,
+    DeviceOrientation.portraitUp,
+  ]);
+
+  try {
+    Get.put(ThemeController(), permanent: true);
+    Get.put(NotificationController(), permanent: true);
+    Get.lazyPut(() => LoaderController(), fenix: true);
+    Get.put(SetPreferencesController(), permanent: true);
+    Get.put(LocationController(), permanent: true);
+    Get.put(BadgeController(), permanent: true);
+    Get.put(DailyGoalSettingsController(), permanent: true);
+    Get.put(QuranDataController(), permanent: true);
+    Get.put(HomeController(), permanent: true);
+    Get.put(StreakController(), permanent: true);
+    Get.put(DailyGoalController(), permanent: true);
+    Get.put(DhikrTaskController(), permanent: true);
+    Get.put(AdhkarController(), permanent: true);
+    Get.put(MemorizationController(), permanent: true);
+    Get.put(TranslationAudioController(), permanent: true);
+    final deepLinkService = Get.put(DeepLinkService(), permanent: true);
+    Get.put(ConnectivityController(), permanent: true);
+    Get.put(StoriesSectionController(), permanent: true);
+    Get.lazyPut(() => UserController(), fenix: true);
+    Get.lazyPut(() => DuaController(), fenix: true);
+    await loadQuranData();
+
+    // Initial deep link check before app starts building
+    try {
+      final initialUri = await AppLinks().getInitialLink();
+      if (initialUri != null) {
+        log('Main: Initial deep link captured: $initialUri');
+        // Extract story ID if present
+        if (initialUri.path.contains('stories') ||
+            initialUri.queryParameters.containsKey('story')) {
+          final String? storyId = initialUri.queryParameters['story'];
+          if (storyId != null && storyId.isNotEmpty) {
+            deepLinkService.pendingStoryId.value = storyId;
+            log('Main: Pending story ID set: $storyId');
+          }
+        }
+      }
+    } catch (e) {
+      log('Main: Error capturing initial link: $e');
+    }
+  } catch (e) {
+    log('❌ Error during controller initialization: $e');
+  }
+  runApp(const MyApp());
+}
+
+class MyApp extends StatefulWidget {
+  const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  @override
+  Widget build(BuildContext context) {
+    return ScreenUtilInit(
+      designSize: const Size(375, 812),
+      builder: (context, child) {
+        return Obx(
+          () => GetMaterialApp(
+            supportedLocales: const [Locale("en")],
+            navigatorObservers: [MyNavigatorObserver()],
+            debugShowCheckedModeBanner: false,
+            localizationsDelegates: const [CountryLocalizations.delegate],
+            title: 'Noor e Quran',
+            navigatorKey: Get.key,
+            theme: theme,
+            initialRoute: Routes.splash,
+            getPages: appRoutes,
+            builder: (context, child) {
+              return Stack(
+                children: [
+                  child!,
+                  Loader(),
+                  Obx(() {
+                    final isConnected =
+                        Get.find<ConnectivityController>().isConnected.value;
+                    return isConnected
+                        ? const SizedBox.shrink()
+                        : const NoInternetOverlay();
+                  }),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+Future<void> loadQuranData() async {
+  try {
+    await Quran.initialize();
+    log('%%%%%%%% Quran init Successfully %%%%%%%%');
+  } catch (e) {
+    log('Error initializing Quran: $e');
+  }
+}
