@@ -1,0 +1,572 @@
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+import 'package:get_storage/get_storage.dart';
+import 'package:noorequran/app/modules/preference/controllers/set_preferences_controller.dart';
+import 'package:noorequran/controllers/notification_controller.dart';
+import 'package:noorequran/services/app_reminder_service.dart';
+import 'package:noorequran/constants/app_colors.dart';
+import 'package:noorequran/constants/ui_properties.dart';
+import 'package:noorequran/utils/utils.dart';
+import 'package:noorequran/utils/toast_message.dart';
+import 'package:noorequran/utils/app_list.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+class NotificationSettingsScreen extends StatefulWidget {
+  const NotificationSettingsScreen({super.key});
+
+  @override
+  State<NotificationSettingsScreen> createState() =>
+      _NotificationSettingsScreenState();
+}
+
+class _NotificationSettingsScreenState
+    extends State<NotificationSettingsScreen> {
+  final SetPreferencesController _prefController = Get.put(
+    SetPreferencesController(),
+  );
+  final GetStorage _storage = GetStorage();
+  final RxString _goalTimeStr = '08:00 AM'.obs;
+  final RxString _morningAdhkarTimeStr = '06:00 AM'.obs;
+  final RxString _eveningAdhkarTimeStr = '06:00 PM'.obs;
+  final RxString _nightAdhkarTimeStr = '09:00 AM'.obs;
+  final RxBool _isGoalReminder = true.obs;
+  final RxBool _isMorningAdhkarReminder = true.obs;
+  final RxBool _isEveningAdhkarReminder = true.obs;
+  final RxBool _isNightAdhkarReminder = true.obs;
+  final RxBool _isSaving = false.obs;
+
+  // Prayer notification states
+  final Map<String, RxBool> _prayerNotifications = {
+    'Fajr': true.obs,
+    'Dhuhr': true.obs,
+    'Asr': true.obs,
+    'Maghrib': true.obs,
+    'Isha': true.obs,
+  };
+
+  final Map<String, RxString> _prayerTimes = <String, RxString>{}.obs;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAllReminders();
+  }
+
+  Future<void> _loadAllReminders() async {
+    final goal = await AppReminderService.getGoalTime();
+    if (goal != null) _goalTimeStr.value = AppReminderService.formatTime(goal);
+
+    final morning = await AppReminderService.getMorningTime();
+    if (morning != null)
+      _morningAdhkarTimeStr.value = AppReminderService.formatTime(morning);
+
+    final adhkar = await AppReminderService.getAdhkarTime();
+    if (adhkar != null)
+      _eveningAdhkarTimeStr.value = AppReminderService.formatTime(adhkar);
+
+    final evening = await AppReminderService.getEveningTime();
+    if (evening != null)
+      _nightAdhkarTimeStr.value = AppReminderService.formatTime(evening);
+
+    // Initial draft values from pref controller
+    _isGoalReminder.value = _prefController.pref.value.isGoalReminder ?? true;
+    _isMorningAdhkarReminder.value =
+        _prefController.pref.value.isMorningReminder;
+    _isEveningAdhkarReminder.value =
+        _prefController.pref.value.isDailyAdhkarReminder;
+    _isNightAdhkarReminder.value = _prefController.pref.value.isEveningReminder;
+
+    // Local prayer preferences
+    _prayerNotifications.forEach((key, value) {
+      value.value = _storage.read('notify_$key') ?? true;
+    });
+
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    for (var prayer in AppList().namaz) {
+      if (prayer.title != null) {
+        final savedTime = prefs.getString('prayer_${prayer.title}');
+        _prayerTimes[prayer.title!] =
+            (savedTime ?? prayer.time ?? '00:00 AM').obs;
+      }
+    }
+  }
+
+  Future<void> _handleSave() async {
+    _isSaving.value = true;
+    try {
+      // 1. Update preferences controller (Local storage + In-memory)
+      _prefController.updatePreference(
+        'isMorningReminder',
+        _isMorningAdhkarReminder.value,
+      );
+      _prefController.updatePreference(
+        'isDailyAdhkarReminder',
+        _isEveningAdhkarReminder.value,
+      );
+      _prefController.updatePreference(
+        'isEveningReminder',
+        _isNightAdhkarReminder.value,
+      );
+      _prefController.updatePreference('isGoalReminder', _isGoalReminder.value);
+
+      _prefController.updatePreference(
+        'morningReminder',
+        _morningAdhkarTimeStr.value,
+      );
+      _prefController.updatePreference(
+        'dailyAdhkarReminder',
+        _eveningAdhkarTimeStr.value,
+      );
+      _prefController.updatePreference(
+        'eveningReminder',
+        _nightAdhkarTimeStr.value,
+      );
+      _prefController.updatePreference('goalReminder', _goalTimeStr.value);
+
+      // (AppReminderService is already updated in _showTimePicker)
+
+      // 2. Update Prayer notification settings
+      _prayerNotifications.forEach((key, value) {
+        _storage.write('notify_$key', value.value);
+      });
+
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      for (var entry in _prayerTimes.entries) {
+        await prefs.setString('prayer_${entry.key}', entry.value.value);
+        await prefs.setBool('prayer_${entry.key}_is_manual', true);
+      }
+
+      // 3. Reschedule all reminders
+      await Get.find<NotificationController>().scheduleAllDailyReminders();
+      await Get.find<NotificationController>().scheduleNamazNotifications();
+
+      // 4. Save to Firebase via SetPreferencesController
+      await _prefController.savePreferences(
+        'NotificationSettingsScreen',
+        context,
+      );
+
+      ToastMessage.successMessage('Notification settings saved');
+    } catch (e) {
+      debugPrint('Error saving notification settings: $e');
+    } finally {
+      _isSaving.value = false;
+    }
+  }
+
+  TimeOfDay? _parseStringToTimeOfDay(String timeStr) {
+    try {
+      final cleanStr = timeStr
+          .replaceAll(RegExp(r'[\u00A0\u2007\u202F]'), ' ')
+          .trim();
+      final parts = cleanStr.split(RegExp(r'\s+'));
+      if (parts.length < 2) return null;
+
+      final hm = parts[0].split(':');
+      if (hm.length < 2) return null;
+
+      int hour = int.parse(hm[0]);
+      int minute = int.parse(hm[1]);
+      bool isPM = parts[1].toUpperCase() == 'PM';
+
+      if (isPM && hour != 12) hour += 12;
+      if (!isPM && hour == 12) hour = 0;
+
+      return TimeOfDay(hour: hour, minute: minute);
+    } catch (e) {
+      debugPrint('Error parsing string to TimeOfDay: $e');
+      return null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: isDark(context) ? black : white,
+      appBar: AppBar(
+        title: Text("Notification Settings", style: s20_700_TextStyle(context)),
+        leading: IconButton(
+          icon: Container(
+            height: 30,
+            width: 30,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: getThemeColor(context),
+            ),
+            child: Icon(Icons.arrow_back_ios_new, size: 18, color: white),
+          ),
+          onPressed: () {
+            Get.back();
+          },
+        ),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        centerTitle: true,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildSectionHeader("Daily Reminders"),
+            const SizedBox(height: 10),
+            Obx(
+              () => _buildCard(
+                child: Column(
+                  children: [
+                    _buildSwitchTile(
+                      title: "Morning Adhkar Reminder",
+                      subtitle: _morningAdhkarTimeStr.value,
+                      value: _isMorningAdhkarReminder.value,
+                      onChanged: (val) {
+                        _isMorningAdhkarReminder.value = val;
+                        _handleSave();
+                      },
+                      onTap: () => _showTimePicker('morningAdhkar'),
+                    ),
+                    const Divider(),
+                    _buildSwitchTile(
+                      title: "Evening Adhkar Reminder",
+                      subtitle: _eveningAdhkarTimeStr.value,
+                      value: _isEveningAdhkarReminder.value,
+                      onChanged: (val) {
+                        _isEveningAdhkarReminder.value = val;
+                        _handleSave();
+                      },
+                      onTap: () => _showTimePicker('eveningAdhkar'),
+                    ),
+                    const Divider(),
+                    _buildSwitchTile(
+                      title: "Night Adhkar Reminder",
+                      subtitle: _nightAdhkarTimeStr.value,
+                      value: _isNightAdhkarReminder.value,
+                      onChanged: (val) {
+                        _isNightAdhkarReminder.value = val;
+                        _handleSave();
+                      },
+                      onTap: () => _showTimePicker('nightAdhkar'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 25),
+            _buildSectionHeader("Prayer Times"),
+            const SizedBox(height: 10),
+            _buildCard(
+              child: Column(
+                children: AppList().namaz
+                    .where(
+                      (p) =>
+                          p.title != 'Sunrise' &&
+                          p.title != 'Sunset' &&
+                          p.title != 'Qiyam',
+                    )
+                    .map((prayer) {
+                      final title = prayer.title ?? '';
+                      return Column(
+                        children: [
+                          Obx(
+                            () => _buildSwitchTile(
+                              title: title,
+                              subtitle:
+                                  _prayerTimes[title]?.value ??
+                                  (prayer.time ?? ''),
+                              value: _prayerNotifications[title]?.value ?? true,
+                              onChanged: (val) {
+                                if (_prayerNotifications.containsKey(title)) {
+                                  _prayerNotifications[title]!.value = val;
+                                } else {
+                                  _prayerNotifications[title] = val.obs;
+                                }
+                                _handleSave();
+                              },
+                              onTap: () => _showPrayerTimePicker(title),
+                            ),
+                          ),
+                          if (prayer != AppList().namaz.last) const Divider(),
+                        ],
+                      );
+                    })
+                    .toList(),
+              ),
+            ),
+            const SizedBox(height: 40),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 5),
+      child: Text(
+        title.toUpperCase(),
+        style: s12_600_TextStyle(context).copyWith(
+          color: Colors.grey,
+          letterSpacing: 1.2,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCard({required Widget child}) {
+    return Container(
+      decoration: BoxDecoration(
+        color: isDark(context) ? Colors.grey[900] : white,
+        borderRadius: BorderRadius.circular(15),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+        border: Border.all(color: Colors.grey.withOpacity(0.1)),
+      ),
+      child: ClipRRect(borderRadius: BorderRadius.circular(15), child: child),
+    );
+  }
+
+  Widget _buildSwitchTile({
+    required String title,
+    required String subtitle,
+    required bool value,
+    required Function(bool) onChanged,
+    required VoidCallback onTap,
+  }) {
+    final themeColor = getThemeColor(context);
+    return ListTile(
+      onTap: onTap,
+      title: Text(title, style: s16_700_TextStyle(context)),
+      subtitle: Text(
+        subtitle,
+        style: s12_600_TextStyle(context).copyWith(color: themeColor),
+      ),
+      trailing: Switch(
+        value: value,
+        activeColor: themeColor,
+        onChanged: onChanged,
+      ),
+    );
+  }
+
+  void _showTimePicker(String category) async {
+    TimeOfDay initialTime = TimeOfDay.now();
+
+    // Set initial time from current values
+    switch (category) {
+      case 'morningAdhkar':
+        initialTime =
+            _parseStringToTimeOfDay(_morningAdhkarTimeStr.value) ?? initialTime;
+        break;
+      case 'eveningAdhkar':
+        initialTime =
+            _parseStringToTimeOfDay(_eveningAdhkarTimeStr.value) ?? initialTime;
+        break;
+      case 'nightAdhkar':
+        initialTime =
+            _parseStringToTimeOfDay(_nightAdhkarTimeStr.value) ?? initialTime;
+        break;
+      case 'goalReminder':
+        initialTime =
+            _parseStringToTimeOfDay(_goalTimeStr.value) ?? initialTime;
+        break;
+    }
+
+    TimeOfDay? picked = await showTimePicker(
+      context: context,
+      initialTime: initialTime,
+      builder: (context, child) {
+        final themeColor = getThemeColor(context);
+        return Theme(
+          data: (isDark(context) ? ThemeData.dark() : ThemeData.light())
+              .copyWith(
+                colorScheme:
+                    (isDark(context)
+                            ? const ColorScheme.dark()
+                            : const ColorScheme.light())
+                        .copyWith(
+                          primary: themeColor,
+                          onPrimary: Colors.white,
+                          secondary: themeColor,
+                          onSecondary: Colors.white,
+                          surface: isDark(context)
+                              ? Colors.grey[900]
+                              : Colors.white,
+                          onSurface: isDark(context)
+                              ? Colors.white
+                              : Colors.black,
+                        ),
+                timePickerTheme: TimePickerThemeData(
+                  backgroundColor: isDark(context)
+                      ? Colors.grey[900]
+                      : Colors.white,
+                  hourMinuteShape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  hourMinuteColor: MaterialStateColor.resolveWith((states) {
+                    if (states.contains(MaterialState.selected)) {
+                      return themeColor;
+                    }
+                    return Colors.transparent;
+                  }),
+                  hourMinuteTextColor: MaterialStateColor.resolveWith((states) {
+                    if (states.contains(MaterialState.selected)) {
+                      return Colors.white;
+                    }
+                    return themeColor;
+                  }),
+                  dayPeriodShape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    side: BorderSide(color: themeColor, width: 1),
+                  ),
+                  dayPeriodColor: MaterialStateColor.resolveWith((states) {
+                    if (states.contains(MaterialState.selected)) {
+                      return themeColor;
+                    }
+                    return Colors.transparent;
+                  }),
+                  dayPeriodTextColor: MaterialStateColor.resolveWith((states) {
+                    if (states.contains(MaterialState.selected)) {
+                      return Colors.white;
+                    }
+                    return themeColor;
+                  }),
+                  dialHandColor: themeColor,
+                  dialBackgroundColor: isDark(context)
+                      ? Colors.grey[800]
+                      : Colors.grey[200],
+                  dialTextColor: isDark(context) ? Colors.white : Colors.black,
+                  entryModeIconColor: themeColor,
+                  helpTextStyle: TextStyle(
+                    color: isDark(context) ? Colors.white : Colors.black,
+                  ),
+                ),
+              ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null) {
+      final formatted = AppReminderService.formatTime(picked);
+      switch (category) {
+        case 'morningAdhkar':
+          _morningAdhkarTimeStr.value = formatted;
+          await AppReminderService.updateMorningTime(picked);
+          break;
+        case 'eveningAdhkar':
+          _eveningAdhkarTimeStr.value = formatted;
+          await AppReminderService.updateAdhkarTime(picked);
+          break;
+        case 'nightAdhkar':
+          _nightAdhkarTimeStr.value = formatted;
+          await AppReminderService.updateEveningTime(picked);
+          break;
+        case 'goalReminder':
+          _goalTimeStr.value = formatted;
+          await AppReminderService.updateGoalTime(picked);
+          break;
+      }
+      await _handleSave();
+    }
+  }
+
+  void _showPrayerTimePicker(String prayerTitle) async {
+    TimeOfDay initialTime = TimeOfDay.now();
+    if (_prayerTimes.containsKey(prayerTitle)) {
+      initialTime =
+          _parseStringToTimeOfDay(_prayerTimes[prayerTitle]!.value) ??
+          initialTime;
+    }
+
+    TimeOfDay? picked = await showTimePicker(
+      context: context,
+      initialTime: initialTime,
+      builder: (context, child) {
+        final themeColor = getThemeColor(context);
+        return Theme(
+          data: (isDark(context) ? ThemeData.dark() : ThemeData.light())
+              .copyWith(
+                colorScheme:
+                    (isDark(context)
+                            ? const ColorScheme.dark()
+                            : const ColorScheme.light())
+                        .copyWith(
+                          primary: themeColor,
+                          onPrimary: Colors.white,
+                          secondary: themeColor,
+                          onSecondary: Colors.white,
+                          surface: isDark(context)
+                              ? Colors.grey[900]
+                              : Colors.white,
+                          onSurface: isDark(context)
+                              ? Colors.white
+                              : Colors.black,
+                        ),
+                timePickerTheme: TimePickerThemeData(
+                  backgroundColor: isDark(context)
+                      ? Colors.grey[900]
+                      : Colors.white,
+                  hourMinuteShape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  hourMinuteColor: MaterialStateColor.resolveWith((states) {
+                    if (states.contains(MaterialState.selected)) {
+                      return themeColor;
+                    }
+                    return Colors.transparent;
+                  }),
+                  hourMinuteTextColor: MaterialStateColor.resolveWith((states) {
+                    if (states.contains(MaterialState.selected)) {
+                      return Colors.white;
+                    }
+                    return themeColor;
+                  }),
+                  dayPeriodShape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    side: BorderSide(color: themeColor, width: 1),
+                  ),
+                  dayPeriodColor: MaterialStateColor.resolveWith((states) {
+                    if (states.contains(MaterialState.selected)) {
+                      return themeColor;
+                    }
+                    return Colors.transparent;
+                  }),
+                  dayPeriodTextColor: MaterialStateColor.resolveWith((states) {
+                    if (states.contains(MaterialState.selected)) {
+                      return Colors.white;
+                    }
+                    return themeColor;
+                  }),
+                  dialHandColor: themeColor,
+                  dialBackgroundColor: isDark(context)
+                      ? Colors.grey[800]
+                      : Colors.grey[200],
+                  dialTextColor: isDark(context) ? Colors.white : Colors.black,
+                  entryModeIconColor: themeColor,
+                  helpTextStyle: TextStyle(
+                    color: isDark(context) ? Colors.white : Colors.black,
+                  ),
+                ),
+              ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null) {
+      final formatted = AppReminderService.formatTime(picked);
+      if (_prayerTimes.containsKey(prayerTitle)) {
+        _prayerTimes[prayerTitle]!.value = formatted;
+      } else {
+        _prayerTimes[prayerTitle] = formatted.obs;
+      }
+      await _handleSave();
+    }
+  }
+}
